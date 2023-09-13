@@ -1,7 +1,6 @@
 use std::fmt::Debug;
 
-use rbatis::rbdc::db::ExecResult;
-use rbatis::rbdc::Error;
+use diesel::QueryResult;
 use serde::Serialize;
 
 pub mod user_vo;
@@ -24,7 +23,7 @@ pub struct BaseResponse<T>
 }
 
 // 处理统一返回
-pub fn handle_result(result: Result<ExecResult, Error>) -> BaseResponse<String> {
+pub fn handle_result(result: QueryResult<usize>) -> BaseResponse<String> {
     match result {
         Ok(_u) => {
             ok_result()
