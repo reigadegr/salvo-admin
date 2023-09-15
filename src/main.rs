@@ -1,16 +1,12 @@
-#[macro_use]
-extern crate rbatis;
+use std::env;
 
-use once_cell::sync::Lazy;
-use rbatis::RBatis;
+use log::info;
+use salvo::affix;
 use salvo::prelude::*;
+use sea_orm::{Database, DatabaseConnection};
 
-use crate::handler::banner_handler::{*};
-use crate::handler::member_handler::{*};
 use crate::handler::menu_handler::{*};
 use crate::handler::role_handler::{*};
-use crate::handler::title_handler::{*};
-use crate::handler::types_handler::{*};
 use crate::handler::user_handler::{*};
 use crate::utils::auth::auth_token;
 
@@ -19,27 +15,29 @@ pub mod vo;
 pub mod handler;
 pub mod utils;
 
-pub static RB: Lazy<RBatis> = Lazy::new(RBatis::new);
 
 #[handler]
 async fn hello() -> &'static str {
     "Hello World123123"
 }
 
+#[derive(Debug, Clone)]
+struct AppState {
+    pub conn: DatabaseConnection,
+}
+
 #[tokio::main]
 async fn main() {
     log4rs::init_file("src/config/log4rs.yaml", Default::default()).unwrap();
     // tracing_subscriber::fmt().init();
+    dotenvy::dotenv().ok();
 
-    let mysql_url = "mysql://root:ad879037-c7a4-4063-9236-6bfc35d54b7d@139.159.180.129:3306/rustdb";
-    RB.init(rbdc_mysql::driver::MysqlDriver {}, mysql_url).unwrap();
+    let db_url = env::var("DATABASE_URL").expect("DATABASE_URL is not set in .env file");
+    let conn = Database::connect(&db_url).await.unwrap();
+    let state = AppState { conn };
 
-    let acceptor = TcpListener::new("0.0.0.0:8100").bind().await;
-    Server::new(acceptor).serve(route()).await;
-}
-
-fn route() -> Router {
-    Router::new().path("/api").get(hello)
+    info!("{:?}", state.conn);
+    let router = Router::new().hoop(affix::inject(state)).path("/api").get(hello)
         .push(Router::new().path("login").post(login))
         .push(
             Router::new().hoop(auth_token)
@@ -61,21 +59,8 @@ fn route() -> Router {
                 .push(Router::new().path("menu_save").post(menu_save))
                 .push(Router::new().path("menu_update").post(menu_update))
                 .push(Router::new().path("menu_delete").post(menu_delete))
-                .push(Router::new().path("banner_list").post(banner_list))
-                .push(Router::new().path("banner_save").post(banner_save))
-                .push(Router::new().path("banner_update").post(banner_update))
-                .push(Router::new().path("banner_delete").post(banner_delete))
-                .push(Router::new().path("member_list").post(member_list))
-                .push(Router::new().path("member_save").post(member_save))
-                .push(Router::new().path("member_update").post(member_update))
-                .push(Router::new().path("member_delete").post(member_delete))
-                .push(Router::new().path("title_list").post(title_list))
-                .push(Router::new().path("title_save").post(title_save))
-                .push(Router::new().path("title_update").post(title_update))
-                .push(Router::new().path("title_delete").post(title_delete))
-                .push(Router::new().path("type_list").post(types_list))
-                .push(Router::new().path("type_save").post(types_save))
-                .push(Router::new().path("type_update").post(types_update))
-                .push(Router::new().path("type_delete").post(types_delete))
-        )
+        );
+
+    let acceptor = TcpListener::new("0.0.0.0:8100").bind().await;
+    Server::new(acceptor).serve(router).await;
 }

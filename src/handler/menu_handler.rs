@@ -1,119 +1,121 @@
-use log::error;
-use rbatis::rbdc::datetime::DateTime;
-use salvo::{Request, Response};
 use salvo::prelude::*;
+use sea_orm::{ColumnTrait, EntityTrait, NotSet, PaginatorTrait, QueryFilter, QueryOrder};
+use sea_orm::ActiveValue::Set;
 
-use crate::model::menu::SysMenu;
-use crate::RB;
-use crate::vo::{err_result_msg, err_result_page, handle_result, ok_result_page};
+use crate::AppState;
+use crate::model::prelude::SysMenu;
+use crate::model::sys_menu;
+use crate::model::sys_menu::ActiveModel;
+use crate::vo::{err_result_msg, ok_result_msg, ok_result_page};
 use crate::vo::menu_vo::{*};
 
 // 查询菜单
 #[handler]
-pub async fn menu_list(req: &mut Request, res: &mut Response) {
+pub async fn menu_list(req: &mut Request, depot: &mut Depot, res: &mut Response) {
     let item = req.parse_json::<MenuListReq>().await;
     log::info!("menu_list params: {:?}", &item);
 
-    // 菜单是树形结构不需要分页
-    let result = SysMenu::select_all(&mut RB.clone()).await;
+    let state = depot.obtain::<AppState>().unwrap();
+    let conn = &state.conn;
 
-    match result {
-        Ok(sys_menu_list) => {
-            let mut list_data: Vec<MenuListData> = Vec::new();
+    let mut list_data: Vec<MenuListData> = Vec::new();
 
-            for menu in sys_menu_list {
-                list_data.push(MenuListData {
-                    id: menu.id.unwrap(),
-                    sort: menu.sort,
-                    status_id: menu.status_id,
-                    parent_id: menu.parent_id,
-                    menu_name: menu.menu_name.to_string(),
-                    label: menu.menu_name,
-                    menu_url: menu.menu_url.unwrap_or_default(),
-                    icon: menu.menu_icon.unwrap_or_default(),
-                    api_url: menu.api_url.unwrap_or_default(),
-                    remark: menu.remark.unwrap_or_default(),
-                    menu_type: menu.menu_type,
-                    create_time: menu.create_time.unwrap().0.to_string(),
-                    update_time: menu.update_time.unwrap().0.to_string(),
-                })
-            }
-            res.render(Json(ok_result_page(list_data, 0)))
-        }
-        Err(err) => {
-            error!("{}", err.to_string());
-            res.render(Json(err_result_page(err.to_string())))
-        }
-    };
+    for menu in SysMenu::find().order_by_asc(sys_menu::Column::Sort).all(conn).await.unwrap_or_default() {
+        list_data.push(MenuListData {
+            id: menu.id,
+            sort: menu.sort,
+            status_id: menu.status_id,
+            parent_id: menu.parent_id,
+            menu_name: menu.menu_name.clone(),
+            label: menu.menu_name,
+            menu_url: menu.menu_url,
+            icon: menu.menu_icon.unwrap_or_default(),
+            api_url: menu.api_url,
+            remark: menu.remark.unwrap_or_default(),
+            menu_type: menu.menu_type,
+            create_time: menu.create_time.to_string(),
+            update_time: menu.update_time.to_string(),
+        })
+    }
+
+    res.render(Json(ok_result_page(list_data, 0)))
 }
 
 // 添加菜单
 #[handler]
-pub async fn menu_save(req: &mut Request, res: &mut Response) {
+pub async fn menu_save(req: &mut Request, depot: &mut Depot, res: &mut Response) {
     let menu = req.parse_json::<MenuSaveReq>().await.unwrap();
     log::info!("menu_save params: {:?}", &menu);
 
-    let sys_menu = SysMenu {
-        id: None,
-        create_time: Some(DateTime::now()),
-        update_time: Some(DateTime::now()),
-        status_id: menu.status_id,
-        sort: menu.sort,
-        parent_id: menu.parent_id,
-        menu_name: menu.menu_name,
-        menu_url: menu.menu_url,
-        api_url: menu.api_url,
-        menu_icon: menu.icon,
-        remark: menu.remark,
-        menu_type: menu.menu_type,
+    let state = depot.obtain::<AppState>().unwrap();
+    let conn = &state.conn;
+
+    let sys_menu = ActiveModel {
+        id: NotSet,
+        status_id: Set(menu.status_id),
+        sort: Set(menu.sort),
+        parent_id: Set(menu.parent_id),
+        menu_name: Set(menu.menu_name),
+        menu_url: Set(menu.menu_url.unwrap_or_default()),
+        api_url: Set(menu.api_url.unwrap_or_default()),
+        menu_icon: Set(menu.icon),
+        remark: Set(menu.remark),
+        menu_type: Set(menu.menu_type),
+        ..Default::default()
     };
 
-    let result = SysMenu::insert(&mut RB.clone(), &sys_menu).await;
-
-    res.render(Json(handle_result(result)))
+    SysMenu::insert(sys_menu).exec(conn).await.unwrap();
+    res.render(Json(ok_result_msg("添加菜单信息成功!")))
 }
 
 // 更新菜单
 #[handler]
-pub async fn menu_update(req: &mut Request, res: &mut Response) {
+pub async fn menu_update(req: &mut Request, depot: &mut Depot, res: &mut Response) {
     let menu = req.parse_json::<MenuUpdateReq>().await.unwrap();
     log::info!("menu_update params: {:?}", &menu);
 
-    let sys_menu = SysMenu {
-        id: Some(menu.id),
-        create_time: None,
-        update_time: Some(DateTime::now()),
-        status_id: menu.status_id,
-        sort: menu.sort,
-        parent_id: menu.parent_id,
-        menu_name: menu.menu_name,
-        menu_url: menu.menu_url,
-        api_url: menu.api_url,
-        menu_icon: menu.icon,
-        remark: menu.remark,
-        menu_type: menu.menu_type,
+    let state = depot.obtain::<AppState>().unwrap();
+    let conn = &state.conn;
+
+    if SysMenu::find_by_id(menu.id.clone()).one(conn).await.unwrap_or_default().is_none() {
+        return res.render(Json(err_result_msg("菜单不存在,不能更新!")));
+    }
+
+    let sys_menu = ActiveModel {
+        id: Set(menu.id),
+        status_id: Set(menu.status_id),
+        sort: Set(menu.sort),
+        parent_id: Set(menu.parent_id),
+        menu_name: Set(menu.menu_name),
+        menu_url: Set(menu.menu_url.unwrap_or_default()),
+        api_url: Set(menu.api_url.unwrap_or_default()),
+        menu_icon: Set(menu.icon),
+        remark: Set(menu.remark),
+        menu_type: Set(menu.menu_type),
+        ..Default::default()
     };
 
-    let result = SysMenu::update_by_column(&mut RB.clone(), &sys_menu, "id").await;
-
-    res.render(Json(handle_result(result)))
+    SysMenu::update(sys_menu).exec(conn).await.unwrap();
+    res.render(Json(ok_result_msg("更新菜单信息成功!")))
 }
 
 // 删除菜单信息
 #[handler]
-pub async fn menu_delete(req: &mut Request, res: &mut Response) {
+pub async fn menu_delete(req: &mut Request, depot: &mut Depot, res: &mut Response) {
     let item = req.parse_json::<MenuDeleteReq>().await.unwrap();
     log::info!("menu_delete params: {:?}", &item);
 
-    let id = item.id;
+    let state = depot.obtain::<AppState>().unwrap();
+    let conn = &state.conn;
 
-    //有下级的时候 不能直接删除
-    let menus = SysMenu::select_by_column(&mut RB.clone(), "parent_id", id.clone()).await.unwrap_or_default();
-
-    if menus.len() > 0 {
-        return res.render(Json(err_result_msg("有下级菜单,不能直接删除".to_string())));
+    if SysMenu::find_by_id(item.id.clone()).one(conn).await.unwrap_or_default().is_none() {
+        return res.render(Json(err_result_msg("菜单不存在,不能删除!")));
     }
 
-    let result = SysMenu::delete_by_column(&mut RB.clone(), "id", id).await;
-    res.render(Json(handle_result(result)))
+    if SysMenu::find().filter(sys_menu::Column::ParentId.eq(item.id.clone())).count(conn).await.unwrap_or_default() > 0 {
+        return res.render(Json(err_result_msg("有下级菜单,不能直接删除!")));
+    }
+
+    SysMenu::delete_by_id(item.id.clone()).exec(conn).await.unwrap();
+    res.render(Json(ok_result_msg("删除菜单信息成功!")))
 }

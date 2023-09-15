@@ -1,407 +1,345 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
-use log::error;
-use rbatis::rbdc::datetime::DateTime;
-use rbatis::sql::PageRequest;
-use rbs::to_value;
-use salvo::{Request, Response};
 use salvo::prelude::*;
+use sea_orm::{ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseBackend, DatabaseConnection, EntityTrait, NotSet, PaginatorTrait, QueryFilter, QueryOrder, QueryTrait, Statement};
+use sea_orm::ActiveValue::Set;
 
-use crate::model::menu::SysMenu;
-use crate::model::role::SysRole;
-use crate::model::user::SysUser;
-use crate::model::user_role::SysUserRole;
-use crate::RB;
+use crate::AppState;
+use crate::model::{sys_menu, sys_user, sys_user_role};
+use crate::model::prelude::{SysMenu, SysRole, SysUser, SysUserRole};
 use crate::utils::error::WhoUnfollowedError;
 use crate::utils::jwt_util::JWTToken;
-use crate::vo::{err_result_msg, err_result_page, handle_result, ok_result_data, ok_result_msg, ok_result_page};
+use crate::vo::{err_result_msg, ok_result_data, ok_result_msg, ok_result_page};
 use crate::vo::user_vo::*;
 
 // 后台用户登录
 #[handler]
-pub async fn login(req: &mut Request, res: &mut Response) {
+pub async fn login(req: &mut Request, depot: &mut Depot, res: &mut Response) {
     let item = req.parse_json::<UserLoginReq>().await.unwrap();
     log::info!("user login params: {:?}", &item);
 
-    let user_result = SysUser::select_by_mobile(&mut RB.clone(), &item.mobile).await;
+    let state = depot.obtain::<AppState>().unwrap();
+    let conn = &state.conn;
+
+    let user_result = SysUser::find().filter(sys_user::Column::Mobile.eq(&item.mobile)).one(conn).await.unwrap_or_default();
     log::info!("select_by_mobile: {:?}",user_result);
 
-    match user_result {
-        Ok(u) => {
-            match u {
-                None => {
-                    return res.render(Json(err_result_msg("用户不存在".to_string())));
-                }
-                Some(user) => {
-                    let id = user.id.unwrap();
-                    let username = user.user_name;
-                    let password = user.password;
+    if user_result.is_none() {
+        return res.render(Json(err_result_msg("用户不存在!")));
+    }
 
-                    if password.ne(&item.password) {
-                        return res.render(Json(err_result_msg("密码不正确".to_string())));
-                    }
+    let user = user_result.unwrap();
 
-                    let btn_menu = query_btn_menu(&id).await;
+    let id = user.id;
+    let username = user.user_name;
+    let password = user.password;
 
-                    if btn_menu.len() == 0 {
-                        return res.render(Json(err_result_msg("用户没有分配角色或者菜单,不能登录".to_string())));
-                    }
+    if password.ne(&item.password) {
+        return res.render(Json(err_result_msg("密码不正确!")));
+    }
 
-                    match JWTToken::new(id, &username, btn_menu).create_token("123") {
-                        Ok(token) => {
-                            res.render(Json(ok_result_data(token)))
-                        }
-                        Err(err) => {
-                            let er = match err {
-                                WhoUnfollowedError::JwtTokenError(s) => { s }
-                                _ => "no math error".to_string()
-                            };
+    let btn_menu = query_btn_menu(conn, id.clone()).await;
 
-                            res.render(Json(err_result_msg(er)))
-                        }
-                    }
-                }
-            }
+    if btn_menu.len() == 0 {
+        return res.render(Json(err_result_msg("用户没有分配角色或者菜单,不能登录!")));
+    }
+
+    match JWTToken::new(id, &username, btn_menu).create_token("123") {
+        Ok(token) => {
+            res.render(Json(ok_result_data(token)))
         }
-
         Err(err) => {
-            log::error!("select_by_column: {:?}",err);
-            return res.render(Json(err_result_msg("查询用户异常".to_string())));
+            let er = match err {
+                WhoUnfollowedError::JwtTokenError(s) => { s }
+                _ => "no math error".to_string()
+            };
+
+            res.render(Json(err_result_msg(&er)))
         }
     }
 }
 
-async fn query_btn_menu(id: &i32) -> Vec<String> {
-    let user_role = SysUserRole::select_by_column(&mut RB.clone(), "user_id", id.clone()).await;
-    // 判断是不是超级管理员
-    let mut is_admin = false;
-
-    for x in user_role.unwrap() {
-        if x.role_id == 1 {
-            is_admin = true;
-            break;
-        }
-    }
-
+// 登录的时候 查询权限
+async fn query_btn_menu(conn: &DatabaseConnection, id: i64) -> Vec<String> {
     let mut btn_menu: Vec<String> = Vec::new();
-    if is_admin {
-        let data = SysMenu::select_all(&mut RB.clone()).await;
-
-        for x in data.unwrap() {
-            btn_menu.push(x.api_url.unwrap_or_default());
+    //角色Id为1的是系统预留超级管理员角色
+    if SysUserRole::find().filter(sys_user_role::Column::UserId.eq(id.clone())).filter(sys_user_role::Column::RoleId.eq(1)).count(conn).await.unwrap_or_default() != 0 {
+        for x in SysMenu::find().all(conn).await.unwrap_or_default() {
+            btn_menu.push(x.api_url);
         }
         log::info!("admin login: {:?}",id);
-        btn_menu
     } else {
-        let sql_str = "select distinct u.api_url from sys_user_role t left join sys_role usr on t.role_id = usr.id left join sys_role_menu srm on usr.id = srm.role_id left join sys_menu u on srm.menu_id = u.id where t.user_id = ?";
-        let btn_menu_map = RB.query_decode::<Vec<HashMap<String, String>>>(sql_str, vec![to_value!(id)]).await.unwrap();
-        for x in btn_menu_map {
-            btn_menu.push(x.get("api_url").unwrap().to_string());
+        let sql_str = r#"select distinct u.api_url from sys_user_role t left join sys_role usr on t.role_id = usr.id left join sys_role_menu srm on usr.id = srm.role_id left join sys_menu u on srm.menu_id = u.id where t.user_id = $1"#;
+        for x in conn.query_all(Statement::from_sql_and_values(DatabaseBackend::MySql, sql_str, [id.into()])).await.unwrap_or_default() {
+            btn_menu.push(x.try_get("", "api_url").unwrap_or_default());
         }
         log::info!("ordinary login: {:?}",id);
-        btn_menu
     }
+
+    btn_menu
 }
 
 #[handler]
-pub async fn query_user_role(req: &mut Request, res: &mut Response) {
+pub async fn query_user_role(req: &mut Request, depot: &mut Depot, res: &mut Response) {
     let item = req.parse_json::<QueryUserRoleReq>().await.unwrap();
     log::info!("query_user_role params: {:?}", item);
 
-    let user_role = SysUserRole::select_by_column(&mut RB.clone(), "user_id", item.user_id).await;
-    let mut user_role_ids: Vec<i32> = Vec::new();
+    let state = depot.obtain::<AppState>().unwrap();
+    let conn = &state.conn;
 
-    for x in user_role.unwrap() {
+    let mut user_role_ids: Vec<i64> = Vec::new();
+
+    for x in SysUserRole::find().filter(sys_user_role::Column::UserId.eq(item.user_id.clone())).all(conn).await.unwrap_or_default() {
         user_role_ids.push(x.role_id);
     }
 
-    let sys_role = SysRole::select_all(&mut RB.clone()).await;
-
     let mut sys_role_list: Vec<UserRoleList> = Vec::new();
 
-    for x in sys_role.unwrap() {
+    for x in SysRole::find().all(conn).await.unwrap_or_default() {
         sys_role_list.push(UserRoleList {
-            id: x.id.unwrap(),
+            id: x.id,
             status_id: x.status_id,
             sort: x.sort,
             role_name: x.role_name,
-            remark: x.remark.unwrap_or_default(),
-            create_time: x.create_time.unwrap().0.to_string(),
-            update_time: x.update_time.unwrap().0.to_string(),
+            remark: x.remark,
+            create_time: x.create_time.to_string(),
+            update_time: x.update_time.to_string(),
         });
     }
 
-    res.render(Json(ok_result_data(QueryUserRoleData {
-        sys_role_list,
-        user_role_ids,
-    })))
+    res.render(Json(ok_result_data(QueryUserRoleData { sys_role_list, user_role_ids })))
 }
 
 // 更新用户与角色的关联
 #[handler]
-pub async fn update_user_role(req: &mut Request, res: &mut Response) {
+pub async fn update_user_role(req: &mut Request, depot: &mut Depot, res: &mut Response) {
     let user_role = req.parse_json::<UpdateUserRoleReq>().await.unwrap();
     log::info!("update_user_role params: {:?}", user_role);
 
-    let user_id = user_role.user_id.clone();
+    let state = depot.obtain::<AppState>().unwrap();
+    let conn = &state.conn;
+
+    let user_id = user_role.user_id;
     let role_ids = &user_role.role_ids;
-    let len = user_role.role_ids.len();
 
-    if user_id.clone() == 1 {
-        return res.render(Json(err_result_msg("不能修改超级管理员的角色".to_string())));
+    if user_id == 1 {
+        return res.render(Json(err_result_msg("不能修改超级管理员的角色!")));
     }
 
-    let sys_result = SysUserRole::delete_by_column(&mut RB.clone(), "user_id", user_id.clone()).await;
+    SysUserRole::delete_many().filter(sys_user_role::Column::UserId.eq(user_id)).exec(conn).await.unwrap();
 
-    if sys_result.is_err() {
-        return res.render(Json(err_result_msg("更新用户角色异常".to_string())));
-    }
-
-    let mut sys_role_user_list: Vec<SysUserRole> = Vec::new();
+    let mut sys_role_user_list: Vec<sys_user_role::ActiveModel> = Vec::new();
     for role_id in role_ids {
         let r_id = role_id.clone();
-        sys_role_user_list.push(SysUserRole {
-            id: None,
-            create_time: Some(DateTime::now()),
-            update_time: Some(DateTime::now()),
-            status_id: 1,
-            sort: 1,
-            role_id: r_id,
-            user_id: user_id.clone(),
+        if r_id == 1 {
+            continue;
+        }
+        sys_role_user_list.push(sys_user_role::ActiveModel {
+            id: NotSet,
+            status_id: Set(1),
+            sort: Set(1),
+            role_id: Set(r_id),
+            user_id: Set(user_id.clone()),
+            ..Default::default()
         })
     }
 
-    let result = SysUserRole::insert_batch(&mut RB.clone(), &sys_role_user_list, len as u64).await;
-
-    res.render(Json(handle_result(result)))
+    SysUserRole::insert_many(sys_role_user_list).exec(conn).await.unwrap();
+    res.render(Json(ok_result_msg("更新用户角色信息成功!")))
 }
-
 
 #[handler]
 pub async fn query_user_menu(depot: &mut Depot, res: &mut Response) {
     log::info!("query user menu params {:?}",depot);
+
+    let state = depot.obtain::<AppState>().unwrap();
+    let conn = &state.conn;
+
     let user_id = depot.get::<i32>("userId").copied().unwrap();
     let username = depot.get::<String>("username").unwrap().to_string();
     log::info!("query user menu params {:?}",user_id);
     log::info!("query user menu params {:?}",username);
 
-    //根据id查询用户
-    let result = SysUser::select_by_id(&mut RB.clone(), user_id).await;
+    if SysUser::find_by_id(user_id).one(conn).await.unwrap_or_default().is_none() {
+        return res.render(Json(err_result_msg("用户不存在!")));
+    }
 
-    match result {
-        Ok(sys_user) => {
-            match sys_user {
-                // 用户不存在的情况
-                None => {
-                    res.render(Json(err_result_msg("用户不存在".to_string())))
-                }
-                Some(user) => {
-                    //role_id为1是超级管理员--判断是不是超级管理员
-                    let sql_str = "select count(id) from sys_user_role where role_id = 1 and user_id = ?";
-                    let count = RB.query_decode::<i32>(sql_str, vec![to_value!(user.id)]).await.unwrap();
+    let sys_menu_list: Vec<sys_menu::Model>;
 
-                    let sys_menu_list: Vec<SysMenu>;
+    if SysUserRole::find().filter(sys_user_role::Column::UserId.eq(user_id.clone())).filter(sys_user_role::Column::RoleId.eq(1)).one(conn).await.unwrap_or_default().is_some() {
+        sys_menu_list = SysMenu::find().all(conn).await.unwrap_or_default();
+    } else {
+        let sql_str = r#"select u.* from sys_user_role t left join sys_role usr on t.role_id = usr.id left join sys_role_menu srm on usr.id = srm.role_id left join sys_menu u on srm.menu_id = u.id where t.user_id = $1 order by u.id asc"#;
+        sys_menu_list = SysMenu::find().from_raw_sql(Statement::from_sql_and_values(DatabaseBackend::MySql, sql_str, [user_id.into()])).all(conn).await.unwrap_or_default();
+    }
 
-                    if count > 0 {
-                        sys_menu_list = SysMenu::select_all(&mut RB.clone()).await.unwrap_or_default();
-                    } else {
-                        let sql_str = "select u.* from sys_user_role t left join sys_role usr on t.role_id = usr.id left join sys_role_menu srm on usr.id = srm.role_id left join sys_menu u on srm.menu_id = u.id where t.user_id = ?";
-                        sys_menu_list = RB.query_decode(sql_str, vec![to_value!(user.id)]).await.unwrap();
-                    }
+    let mut btn_menu: HashSet<String> = HashSet::new();
+    let mut sys_menu_ids: HashSet<i64> = HashSet::new();
 
-                    let mut sys_menu: Vec<MenuUserList> = Vec::new();
-                    let mut btn_menu: Vec<String> = Vec::new();
-                    let mut sys_menu_ids: HashSet<i32> = HashSet::new();
-
-                    for x in sys_menu_list {
-                        if x.menu_type != 3 {
-                            sys_menu_ids.insert(x.id.unwrap_or_default().clone());
-                            sys_menu_ids.insert(x.parent_id.clone());
-                        }
-                        if x.api_url.clone().unwrap_or_default().len() > 0 {
-                            btn_menu.push(x.api_url.unwrap_or_default());
-                        }
-                    }
-
-                    let mut menu_ids = Vec::new();
-                    for id in sys_menu_ids {
-                        menu_ids.push(id)
-                    }
-                    let menu_result = SysMenu::select_by_ids(&mut RB.clone(), &menu_ids).await.unwrap();
-                    for menu in menu_result {
-                        sys_menu.push(MenuUserList {
-                            id: menu.id.unwrap(),
-                            parent_id: menu.parent_id,
-                            name: menu.menu_name,
-                            icon: menu.menu_icon.unwrap_or_default(),
-                            api_url: menu.api_url.as_ref().unwrap().to_string(),
-                            menu_type: menu.menu_type,
-                            path: menu.menu_url.unwrap_or_default(),
-                        });
-
-                        if menu.api_url.clone().unwrap_or_default().len() > 0 {
-                            btn_menu.push(menu.api_url.unwrap_or_default());
-                        }
-                    }
-
-                    res.render(Json(ok_result_data(QueryUserMenuData {
-                        sys_menu,
-                        btn_menu,
-                        avatar: "https://gw.alipayobjects.com/zos/antfincdn/XAosXuNZyF/BiazfanxmamNRoxxVxka.png".to_string(),
-                        name: user.user_name,
-                    })))
-                }
-            }
+    for x in sys_menu_list {
+        if x.menu_type != 3 {
+            sys_menu_ids.insert(x.id);
+            sys_menu_ids.insert(x.parent_id);
         }
-        // 查询用户数据库异常
-        Err(err) => {
-            error!("{}", err.to_string());
-            res.render(Json(err_result_msg(err.to_string())))
+        if x.api_url.len() > 0 {
+            btn_menu.insert(x.api_url);
         }
     }
+
+    let mut menu_ids = Vec::new();
+    for id in sys_menu_ids {
+        menu_ids.push(id)
+    }
+    let mut sys_menu: HashSet<MenuUserList> = HashSet::new();
+    for y in SysMenu::find().filter(sys_menu::Column::Id.is_in(menu_ids)).filter(sys_menu::Column::StatusId.eq(1)).order_by_asc(sys_menu::Column::Sort).all(conn).await.unwrap_or_default() {
+        sys_menu.insert(MenuUserList {
+            id: y.id,
+            parent_id: y.parent_id,
+            name: y.menu_name,
+            icon: y.menu_icon.unwrap_or_default(),
+            api_url: y.api_url.clone(),
+            menu_type: y.menu_type,
+            path: y.menu_url,
+        });
+        if y.api_url.len() > 0 {
+            btn_menu.insert(y.api_url.clone());
+        }
+    }
+
+    let avatar = "https://gw.alipayobjects.com/zos/antfincdn/XAosXuNZyF/BiazfanxmamNRoxxVxka.png".to_string();
+
+    res.render(Json(ok_result_data(QueryUserMenuData { sys_menu, btn_menu, avatar, name: username })))
 }
 
 // 查询用户列表
 #[handler]
-pub async fn user_list(req: &mut Request, res: &mut Response) {
+pub async fn user_list(req: &mut Request, depot: &mut Depot, res: &mut Response) {
     let item = req.parse_json::<UserListReq>().await.unwrap();
     log::info!("query user_list params: {:?}", &item);
 
-    let mobile = item.mobile.as_deref().unwrap_or_default();
-    //状态(1:正常，0:禁用),不传状态参数的时候,默认为2,在rbatis语句中判断
-    let status_id = item.status_id.unwrap_or(2);
+    let state = depot.obtain::<AppState>().unwrap();
+    let conn = &state.conn;
 
-    let page_req = &PageRequest::new(item.page_no, item.page_size);
-    let result = SysUser::select_page_by_name(&mut RB.clone(), page_req, mobile, status_id).await;
+    let paginator = SysUser::find()
+        .apply_if(item.mobile.clone(), |query, v| {
+            query.filter(sys_user::Column::Mobile.eq(v))
+        })
+        .apply_if(item.status_id.clone(), |query, v| {
+            query.filter(sys_user::Column::StatusId.eq(v))
+        }).paginate(conn, item.page_size.clone());
 
-    match result {
-        Ok(page) => {
-            let total = page.total;
+    let total = paginator.num_items().await.unwrap_or_default();
 
-            let mut list_data: Vec<UserListData> = Vec::new();
+    let mut list_data: Vec<UserListData> = Vec::new();
 
-            for user in page.records {
-                list_data.push(UserListData {
-                    id: user.id.unwrap(),
-                    sort: user.sort,
-                    status_id: user.status_id,
-                    mobile: user.mobile,
-                    user_name: user.user_name,
-                    remark: user.remark.unwrap_or_default(),
-                    create_time: user.create_time.unwrap().0.to_string(),
-                    update_time: user.update_time.unwrap().0.to_string(),
-                })
-            }
-
-            res.render(Json(ok_result_page(list_data, total)))
-        }
-        Err(err) => {
-            error!("{}", err.to_string());
-            res.render(Json(err_result_page(err.to_string())))
-        }
+    for user in paginator.fetch_page(item.page_no.clone() - 1).await.unwrap_or_default() {
+        list_data.push(UserListData {
+            id: user.id,
+            sort: user.sort,
+            status_id: user.status_id,
+            mobile: user.mobile,
+            user_name: user.user_name,
+            remark: user.remark.unwrap_or_default(),
+            create_time: user.create_time.to_string(),
+            update_time: user.update_time.to_string(),
+        })
     }
+
+    res.render(Json(ok_result_page(list_data, total)))
 }
 
 // 添加用户信息
 #[handler]
-pub async fn user_save(req: &mut Request, res: &mut Response) {
+pub async fn user_save(req: &mut Request, depot: &mut Depot, res: &mut Response) {
     let user = req.parse_json::<UserSaveReq>().await.unwrap();
     log::info!("user_save params: {:?}", &user);
 
-    let sys_user = SysUser {
-        id: None,
-        create_time: Some(DateTime::now()),
-        update_time: Some(DateTime::now()),
-        status_id: user.status_id,
-        sort: user.sort,
-        mobile: user.mobile,
-        user_name: user.user_name,
-        remark: user.remark,
-        password: "123456".to_string(),//默认密码为123456,暂时不加密
+    let state = depot.obtain::<AppState>().unwrap();
+    let conn = &state.conn;
+
+    let sys_user = sys_user::ActiveModel {
+        id: NotSet,
+        status_id: Set(user.status_id),
+        sort: Set(user.sort),
+        mobile: Set(user.mobile),
+        user_name: Set(user.user_name),
+        remark: Set(user.remark),
+        ..Default::default()
     };
 
-    let result = SysUser::insert(&mut RB.clone(), &sys_user).await;
-
-    res.render(Json(handle_result(result)))
+    SysUser::insert(sys_user).exec(conn).await.unwrap();
+    res.render(Json(ok_result_msg("添加用户信息成功!")))
 }
 
 // 更新用户信息
 #[handler]
-pub async fn user_update(req: &mut Request, res: &mut Response) {
+pub async fn user_update(req: &mut Request, depot: &mut Depot, res: &mut Response) {
     let user = req.parse_json::<UserUpdateReq>().await.unwrap();
     log::info!("user_update params: {:?}", &user);
 
-    let result = SysUser::select_by_id(&mut RB.clone(), user.id.clone()).await.unwrap();
+    let state = depot.obtain::<AppState>().unwrap();
+    let conn = &state.conn;
 
-    match result {
-        None => {
-            res.render(Json(err_result_msg("用户不存在".to_string())))
-        }
-        Some(sys_user) => {
-            let sys_user = SysUser {
-                id: Some(user.id),
-                create_time: sys_user.create_time,
-                update_time: Some(DateTime::now()),
-                status_id: user.status_id,
-                sort: user.sort,
-                mobile: user.mobile,
-                user_name: user.user_name,
-                remark: user.remark,
-                password: sys_user.password,
-            };
-
-            let result = SysUser::update_by_column(&mut RB.clone(), &sys_user, "id").await;
-
-            res.render(Json(handle_result(result)))
-        }
+    if SysUser::find_by_id(user.id.clone()).one(conn).await.unwrap_or_default().is_none() {
+        // return  res.render(Json(err_result_msg("用户不存在!")));
+        return res.render(Json(err_result_msg("用户不存在!")));
     }
+
+    let sys_user = sys_user::ActiveModel {
+        id: Set(user.id),
+        status_id: Set(user.status_id),
+        sort: Set(user.sort),
+        mobile: Set(user.mobile),
+        user_name: Set(user.user_name),
+        remark: Set(user.remark),
+        ..Default::default()
+    };
+
+    SysUser::update(sys_user).exec(conn).await.unwrap();
+    res.render(Json(ok_result_msg("更新用户信息成功!")))
 }
 
 // 删除用户信息
 #[handler]
-pub async fn user_delete(req: &mut Request, res: &mut Response) {
+pub async fn user_delete(req: &mut Request, depot: &mut Depot, res: &mut Response) {
     let item = req.parse_json::<UserDeleteReq>().await.unwrap();
     log::info!("user_delete params: {:?}", &item);
 
-    let ids = item.ids;
+    let state = depot.obtain::<AppState>().unwrap();
+    let conn = &state.conn;
+
+    let ids = item.ids.clone();
     for id in ids {
         if id != 1 {//id为1的用户为系统预留用户,不能删除
-            let _ = SysUser::delete_by_column(&mut RB.clone(), "id", &id).await;
+            let _ = SysUser::delete_by_id(id).exec(conn).await;
         }
     }
 
-    res.render(Json(ok_result_msg("删除用户信息成功".to_string())))
+    res.render(Json(ok_result_msg("删除用户信息成功!")))
 }
 
 // 更新用户密码
 #[handler]
-pub async fn update_user_password(req: &mut Request, res: &mut Response) {
+pub async fn update_user_password(req: &mut Request, depot: &mut Depot, res: &mut Response) {
     let user_pwd = req.parse_json::<UpdateUserPwdReq>().await.unwrap();
     log::info!("update_user_pwd params: {:?}", &user_pwd);
 
-    let sys_user_result = SysUser::select_by_id(&mut RB.clone(), user_pwd.id).await;
+    let state = depot.obtain::<AppState>().unwrap();
+    let conn = &state.conn;
 
-    match sys_user_result {
-        Ok(user_result) => {
-            match user_result {
-                None => {
-                    res.render(Json(err_result_msg("用户不存在".to_string())))
-                }
-                Some(mut user) => {
-                    if user.password == user_pwd.pwd {
-                        user.password = user_pwd.re_pwd;
-                        let result = SysUser::update_by_column(&mut RB.clone(), &user, "id").await;
+    let result = SysUser::find_by_id(user_pwd.id).one(conn).await.unwrap_or_default();
+    if result.is_none() {
+        return res.render(Json(err_result_msg("用户不存在!")));
+    };
 
-                        res.render(Json(handle_result(result)))
-                    } else {
-                        res.render(Json(err_result_msg("旧密码不正确".to_string())))
-                    }
-                }
-            }
-        }
-        Err(err) => {
-            error!("{}", err.to_string());
-            res.render(Json(err_result_msg(err.to_string())))
-        }
+    let user = result.unwrap();
+    if user.password == user_pwd.pwd {
+        let mut s_user: sys_user::ActiveModel = user.into();
+        s_user.password = Set(user_pwd.re_pwd);
+
+        s_user.update(conn).await.unwrap();
+        res.render(Json(ok_result_msg("更新用户密码成功!")))
+    } else {
+        res.render(Json(err_result_msg("旧密码不正确!")))
     }
 }

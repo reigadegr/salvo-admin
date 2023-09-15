@@ -1,16 +1,10 @@
 use std::fmt::Debug;
 
-use rbatis::rbdc::db::ExecResult;
-use rbatis::rbdc::Error;
 use serde::Serialize;
 
 pub mod user_vo;
 pub mod role_vo;
 pub mod menu_vo;
-pub mod banner_vo;
-pub mod member_vo;
-pub mod title_vo;
-pub mod types_vo;
 
 
 // 统一返回vo
@@ -23,17 +17,6 @@ pub struct BaseResponse<T>
     pub data: Option<T>,
 }
 
-// 处理统一返回
-pub fn handle_result(result: Result<ExecResult, Error>) -> BaseResponse<String> {
-    match result {
-        Ok(_u) => {
-            ok_result()
-        }
-        Err(err) => {
-            err_result_msg(err.to_string())
-        }
-    }
-}
 
 
 pub fn ok_result() -> BaseResponse<String> {
@@ -44,7 +27,7 @@ pub fn ok_result() -> BaseResponse<String> {
     }
 }
 
-pub fn ok_result_msg(msg: String) -> BaseResponse<String> {
+pub fn ok_result_msg(msg: &str) -> BaseResponse<String> {
     BaseResponse {
         msg: msg.to_string(),
         code: 0,
@@ -68,7 +51,7 @@ pub fn ok_result_data<T: Serialize + Debug>(data: T) -> BaseResponse<T> {
     }
 }
 
-pub fn err_result_msg(msg: String) -> BaseResponse<String> {
+pub fn err_result_msg(msg: &str) -> BaseResponse<String> {
     BaseResponse {
         msg: msg.to_string(),
         code: 1,
