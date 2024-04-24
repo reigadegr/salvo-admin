@@ -59,8 +59,10 @@ pub async fn auth_token(req: &mut Request, res: &mut Response, ctrl: &mut FlowCt
                 }
             }
             if flag {
-                depot.insert("userId", jwt_token.id.clone());
-                depot.insert("username", jwt_token.username.clone());
+                let id=jwt_token.id.clone();
+                let username=jwt_token.username.clone();
+                depot.insert("userId", id);
+                depot.insert("username", username);
             } else {
                 log::error!("Hi from start. You requested path: {:?}", path);
                 let resp = BaseResponse {
