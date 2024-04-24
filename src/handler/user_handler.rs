@@ -155,7 +155,7 @@ pub async fn query_user_menu(depot: &mut Depot, res: &mut Response) {
     let state = depot.obtain::<AppState>().unwrap();
     let conn = &state.conn;
 
-    let user_id = depot.get::<i32>("userId").copied().unwrap();
+    let user_id = depot.get::<i64>("userId").copied().unwrap();
     let username = depot.get::<String>("username").unwrap().to_string();
     log::info!("query user menu params {:?}",user_id);
     log::info!("query user menu params {:?}",username);

@@ -1,6 +1,6 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use jsonwebtoken::{decode, DecodingKey, encode, EncodingKey, errors::ErrorKind, Header, Validation};
+use jsonwebtoken::{Algorithm, decode, DecodingKey, encode, EncodingKey, errors::ErrorKind, Header, Validation};
 use serde::{Deserialize, Serialize};
 
 use crate::utils::error::WhoUnfollowedError;
@@ -61,8 +61,10 @@ impl JWTToken {
     /// verify token invalid
     /// secret: your secret string
     pub fn verify(secret: &str, token: &str) -> Result<JWTToken, WhoUnfollowedError> {
-        let mut validation = Validation::default();
-        validation.validate_nbf = true;
+        let mut validation = Validation::new(Algorithm::HS256);
+        validation.sub = Some("rust_admin".to_string());
+        validation.set_audience(&["rust_admin"]);
+        validation.set_required_spec_claims(&["exp", "sub", "aud"]);
         return match decode::<JWTToken>(
             &token,
             &DecodingKey::from_secret(secret.as_ref()),
@@ -75,7 +77,7 @@ impl JWTToken {
                 ErrorKind::InvalidIssuer => return Err(JwtTokenError("InvalidIssuer".to_string())), // Example on how to handle a specific error
                 ErrorKind::ExpiredSignature => return Err(JwtTokenError("token 已经超时了".to_string())), // Example on how to handle a specific error
                 // _ => return Err(Error::from("InvalidToken other errors")),
-                _ => Err(JwtTokenError("create token error".to_string())),
+                _ => Err(JwtTokenError(err.to_string())),
             },
         };
     }
