@@ -1,7 +1,7 @@
 use std::env;
 
 use log::info;
-use salvo::affix;
+use salvo::affix_state;
 use salvo::prelude::*;
 use sea_orm::{Database, DatabaseConnection};
 
@@ -37,7 +37,7 @@ async fn main() {
     let state = AppState { conn };
 
     info!("{:?}", state.conn);
-    let router = Router::new().hoop(affix::inject(state)).path("/api").get(hello)
+    let router = Router::new().hoop(affix_state::inject(state)).path("/api").get(hello)
         .push(Router::new().path("login").post(login))
         .push(
             Router::new().hoop(auth_token)
