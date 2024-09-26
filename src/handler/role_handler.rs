@@ -1,5 +1,6 @@
 use diesel::{ExpressionMethods, QueryDsl, RunQueryDsl};
 use diesel::associations::HasTable;
+use diesel::dsl::insert_into;
 use log::{debug, error};
 use salvo::{Request, Response};
 use salvo::prelude::*;
@@ -17,11 +18,94 @@ use crate::schema::sys_user_role::dsl::sys_user_role;
 use crate::vo::{err_result_msg, handle_result, ok_result_data, ok_result_page};
 use crate::vo::role_vo::*;
 
+// 添加角色信息
+#[handler]
+pub async fn add_role(req: &mut Request, res: &mut Response) {
+    let role = req.parse_json::<RoleSaveReq>().await.unwrap();
+    log::info!("add_role params: {:?}", &role);
+    let role_add = SysRoleAdd {
+        status_id: role.status_id,
+        sort: role.sort,
+        role_name: role.role_name,
+        remark: role.remark.unwrap(),
+    };
+
+    let resp = match &mut RB.clone().get() {
+        Ok(conn) => {
+            handle_result(diesel::insert_into(sys_role::table()).values(role_add).execute(conn))
+        }
+        Err(err) => {
+            error!("err:{}", err.to_string());
+            err_result_msg(err.to_string())
+        }
+    };
+
+    res.render(Json(resp))
+}
+
+// 删除角色信息
+#[handler]
+pub async fn delete_role(req: &mut Request, res: &mut Response) {
+    let item = req.parse_json::<RoleDeleteReq>().await.unwrap();
+    log::info!("delete_role params: {:?}", &item);
+    let resp = match &mut RB.clone().get() {
+        Ok(conn) => {
+            let ids = item.ids.clone();
+            //查询角色有没有被使用了,如果使用了就不能删除
+            match sys_user_role.filter(schema::sys_user_role::role_id.eq_any(ids)).count().get_result::<i64>(conn) {
+                Ok(count) => {
+                    if count != 0 {
+                        error!("err:{}", "角色已被使用,不能删除".to_string());
+                        return res.render(Json(err_result_msg("角色已被使用,不能删除".to_string())));
+                    }
+                    handle_result(diesel::delete(sys_role.filter(id.eq_any(&item.ids))).execute(conn))
+                }
+                Err(err) => {
+                    error!("err:{}", err.to_string());
+                    err_result_msg(err.to_string())
+                }
+            }
+        }
+        Err(err) => {
+            error!("err:{}", err.to_string());
+            err_result_msg(err.to_string())
+        }
+    };
+
+    res.render(Json(resp))
+}
+
+// 更新角色信息
+#[handler]
+pub async fn update_role(req: &mut Request, res: &mut Response) {
+    let role = req.parse_json::<RoleUpdateReq>().await.unwrap();
+    log::info!("update_role params: {:?}", &role);
+    let s_role = SysRoleUpdate {
+        id: role.id,
+        status_id: role.status_id,
+        sort: role.sort,
+        role_name: role.role_name,
+        remark: role.remark.unwrap_or_default(),
+    };
+
+    let resp = match &mut RB.clone().get() {
+        Ok(conn) => {
+            handle_result(diesel::update(sys_role).filter(id.eq(&role.id)).set(s_role).execute(conn))
+        }
+        Err(err) => {
+            error!("err:{}", err.to_string());
+            err_result_msg(err.to_string())
+        }
+    };
+
+    res.render(Json(resp))
+}
+
 // 查询角色列表
 #[handler]
-pub async fn role_list(req: &mut Request, res: &mut Response) {
+pub async fn query_role_list(req: &mut Request, res: &mut Response) {
     let item = req.parse_json::<RoleListReq>().await.unwrap();
-    log::info!("role_list params: {:?}", &item);
+    log::info!("query_role_list params: {:?}", &item);
     let mut query = sys_role::table().into_boxed();
     if let Some(i) = &item.role_name {
         query = query.filter(role_name.eq(i));
@@ -57,89 +141,6 @@ pub async fn role_list(req: &mut Request, res: &mut Response) {
             res.render(Json(err_result_msg(err.to_string())))
         }
     }
-}
-
-// 添加角色信息
-#[handler]
-pub async fn role_save(req: &mut Request, res: &mut Response) {
-    let role = req.parse_json::<RoleSaveReq>().await.unwrap();
-    log::info!("role_save params: {:?}", &role);
-    let role_add = SysRoleAdd {
-        status_id: role.status_id,
-        sort: role.sort,
-        role_name: role.role_name,
-        remark: role.remark.unwrap(),
-    };
-
-    let resp = match &mut RB.clone().get() {
-        Ok(conn) => {
-            handle_result(diesel::insert_into(sys_role::table()).values(role_add).execute(conn))
-        }
-        Err(err) => {
-            error!("err:{}", err.to_string());
-            err_result_msg(err.to_string())
-        }
-    };
-
-    res.render(Json(resp))
-}
-
-// 更新角色信息
-#[handler]
-pub async fn role_update(req: &mut Request, res: &mut Response) {
-    let role = req.parse_json::<RoleUpdateReq>().await.unwrap();
-    log::info!("role_update params: {:?}", &role);
-    let s_role = SysRoleUpdate {
-        id: role.id,
-        status_id: role.status_id,
-        sort: role.sort,
-        role_name: role.role_name,
-        remark: role.remark.unwrap_or_default(),
-    };
-
-    let resp = match &mut RB.clone().get() {
-        Ok(conn) => {
-            handle_result(diesel::update(sys_role).filter(id.eq(&role.id)).set(s_role).execute(conn))
-        }
-        Err(err) => {
-            error!("err:{}", err.to_string());
-            err_result_msg(err.to_string())
-        }
-    };
-
-    res.render(Json(resp))
-}
-
-// 删除角色信息
-#[handler]
-pub async fn role_delete(req: &mut Request, res: &mut Response) {
-    let item = req.parse_json::<RoleDeleteReq>().await.unwrap();
-    log::info!("role_delete params: {:?}", &item);
-    let resp = match &mut RB.clone().get() {
-        Ok(conn) => {
-            let ids = item.ids.clone();
-            //查询角色有没有被使用了,如果使用了就不能删除
-            match sys_user_role.filter(schema::sys_user_role::role_id.eq_any(ids)).count().get_result::<i64>(conn) {
-                Ok(count) => {
-                    if count != 0 {
-                        error!("err:{}", "角色已被使用,不能删除".to_string());
-                        return res.render(Json(err_result_msg("角色已被使用,不能删除".to_string())));
-                    }
-                    handle_result(diesel::delete(sys_role.filter(id.eq_any(&item.ids))).execute(conn))
-                }
-                Err(err) => {
-                    error!("err:{}", err.to_string());
-                    err_result_msg(err.to_string())
-                }
-            }
-        }
-        Err(err) => {
-            error!("err:{}", err.to_string());
-            err_result_msg(err.to_string())
-        }
-    };
-
-    res.render(Json(resp))
 }
 
 // 查询角色关联的菜单
@@ -222,7 +223,7 @@ pub async fn update_role_menu(req: &mut Request, res: &mut Response) {
                         })
                     }
 
-                    handle_result(diesel::insert_into(sys_role_menu::table()).values(role_menu).execute(conn))
+                    handle_result(diesel::insert_into(sys_role_menu::table()).values(&role_menu).execute(conn))
                 }
                 Err(err) => {
                     error!("err:{}", err.to_string());
