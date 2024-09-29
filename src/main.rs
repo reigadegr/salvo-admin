@@ -31,7 +31,7 @@ async fn main() {
     log4rs::init_file("src/config/log4rs.yaml", Default::default()).unwrap();
     // tracing_subscriber::fmt().init();
 
-    let mysql_url = "mysql://root:ad879037-c7a4-4063-9236-6bfc35d54b7d@139.159.180.129:3306/rustdb";
+    let mysql_url = "mysql://root:1234@127.0.0.1:3306/bs_desktop";
     RB.init(rbdc_mysql::driver::MysqlDriver {}, mysql_url).unwrap();
 
     let acceptor = TcpListener::new("0.0.0.0:8100").bind().await;
