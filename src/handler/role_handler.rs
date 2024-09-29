@@ -1,6 +1,5 @@
 use diesel::{ExpressionMethods, QueryDsl, RunQueryDsl};
 use diesel::associations::HasTable;
-use diesel::dsl::insert_into;
 use log::{debug, error};
 use salvo::{Request, Response};
 use salvo::prelude::*;

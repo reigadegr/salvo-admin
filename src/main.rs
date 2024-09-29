@@ -9,13 +9,14 @@ use salvo::prelude::*;
 use crate::handler::menu_handler::{*};
 use crate::handler::role_handler::{*};
 use crate::handler::user_handler::{*};
-use crate::utils::auth::auth_token;
+use crate::middleware::auth::auth_token;
 
 pub mod model;
 pub mod vo;
 pub mod handler;
 pub mod utils;
 pub mod schema;
+pub mod middleware;
 
 #[handler]
 async fn hello() -> &'static str {
